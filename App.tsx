@@ -4,7 +4,7 @@ import OSD from './components/OSD';
 import { CameraMode, CameraSettings, CapturedImage } from './types';
 import { performStacking, processSonyLook } from './services/imageProcessing';
 import { analyzeImageScene } from './services/geminiService';
-import { X, Wand2, Loader2, Download, RefreshCcw } from 'lucide-react';
+import { X, Wand2, Loader2, Download, RefreshCcw, AlertTriangle, RefreshCw } from 'lucide-react';
 
 // Default Simulated Settings
 const DEFAULT_SETTINGS: CameraSettings = {
@@ -27,6 +27,10 @@ const App: React.FC = () => {
   const [selectedPhoto, setSelectedPhoto] = useState<CapturedImage | null>(null);
   const [gridEnabled, setGridEnabled] = useState(true);
   
+  // System State
+  const [isLoading, setIsLoading] = useState(true);
+  const [cameraError, setCameraError] = useState<string | null>(null);
+  
   // AI State
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
@@ -34,33 +38,62 @@ const App: React.FC = () => {
   // Dynamic Settings (Simulation)
   const [settings, setSettings] = useState<CameraSettings>(DEFAULT_SETTINGS);
 
-  // Initialize Camera
-  useEffect(() => {
-    const startCamera = async () => {
+  const startCamera = useCallback(async () => {
+    setIsLoading(true);
+    setCameraError(null);
+
+    // Stop existing tracks if any
+    if (stream) {
+      stream.getTracks().forEach(track => track.stop());
+    }
+
+    try {
+      let mediaStream: MediaStream;
+      
       try {
+        // Try preferred settings (Rear camera, 4K)
         const constraints = {
           video: {
             facingMode: 'environment',
-            width: { ideal: 3840 }, // 4K ideal
+            width: { ideal: 3840 }, 
             height: { ideal: 2160 }
-          }
+          },
+          audio: false
         };
-        const mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
-        setStream(mediaStream);
-        if (videoRef.current) {
-          videoRef.current.srcObject = mediaStream;
-        }
+        mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
       } catch (err) {
-        console.error("Camera access denied:", err);
+        console.warn("Primary camera config failed, trying fallback...", err);
+        // Fallback to any available camera
+        mediaStream = await navigator.mediaDevices.getUserMedia({ 
+            video: true,
+            audio: false 
+        });
       }
-    };
 
+      setStream(mediaStream);
+      
+      if (videoRef.current) {
+        videoRef.current.srcObject = mediaStream;
+        // Important: Explicitly call play() and ensure muted is set in JSX
+        await videoRef.current.play();
+      }
+    } catch (err) {
+      console.error("Camera access denied:", err);
+      setCameraError("SENSOR ERROR: ACCESS DENIED OR NOT FOUND");
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  // Initialize Camera
+  useEffect(() => {
     startCamera();
-
+    
+    // Cleanup function
     return () => {
-      if (stream) {
-        stream.getTracks().forEach(track => track.stop());
-      }
+      // We don't stop the stream here immediately to prevent flicker on hot reloads, 
+      // but in a real app or unmount we should.
+      // The startCamera function handles stopping previous streams.
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -144,50 +177,82 @@ const App: React.FC = () => {
       {/* Hidden Canvas for Processing */}
       <canvas ref={canvasRef} className="hidden" />
 
-      {/* Viewfinder */}
+      {/* Main Camera View */}
       <div className="relative flex-1 bg-zinc-900 overflow-hidden flex items-center justify-center">
+        
+        {/* Loading State */}
+        {isLoading && (
+            <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-black text-white space-y-4">
+                <Loader2 className="animate-spin text-orange-500" size={48} />
+                <span className="font-mono text-sm tracking-widest animate-pulse">INITIALIZING SENSOR...</span>
+            </div>
+        )}
+
+        {/* Error State */}
+        {cameraError && !isLoading && (
+            <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-black text-white space-y-6 p-8 text-center">
+                <AlertTriangle className="text-red-500" size={64} />
+                <div className="space-y-2">
+                    <h2 className="text-xl font-bold tracking-wider text-red-500">SYSTEM ERROR</h2>
+                    <p className="font-mono text-xs text-zinc-400">{cameraError}</p>
+                </div>
+                <button 
+                    onClick={() => startCamera()}
+                    className="flex items-center gap-2 px-6 py-3 bg-zinc-800 border border-zinc-600 rounded hover:bg-zinc-700 transition-colors"
+                >
+                    <RefreshCw size={18} />
+                    <span>RETRY INITIALIZATION</span>
+                </button>
+            </div>
+        )}
+
         {/* Video Stream */}
         <video 
           ref={videoRef} 
           autoPlay 
           playsInline 
-          className="h-full w-full object-cover brightness-105 contrast-[1.1] saturate-[1.1]" 
-          // Note: CSS filters here simulate the preview look, actual look is baked in canvas
+          muted // Critical for mobile autoplay
+          className={`h-full w-full object-cover brightness-105 contrast-[1.1] saturate-[1.1] transition-opacity duration-500 ${isLoading ? 'opacity-0' : 'opacity-100'}`} 
         />
         
-        {/* Grid Overlay */}
-        {gridEnabled && (
-          <div className="absolute inset-0 pointer-events-none opacity-40">
-             <div className="w-full h-full border border-white/20 grid grid-cols-3 grid-rows-3">
-                 <div className="border-r border-b border-white/20"></div>
-                 <div className="border-r border-b border-white/20"></div>
-                 <div className="border-b border-white/20"></div>
-                 <div className="border-r border-b border-white/20"></div>
-                 <div className="border-r border-b border-white/20"></div>
-                 <div className="border-b border-white/20"></div>
-                 <div className="border-r border-white/20"></div>
-                 <div className="border-r border-white/20"></div>
-                 <div></div>
-             </div>
-          </div>
-        )}
+        {/* Overlays (Only show when camera is active and no error) */}
+        {!isLoading && !cameraError && (
+            <>
+                {/* Grid Overlay */}
+                {gridEnabled && (
+                  <div className="absolute inset-0 pointer-events-none opacity-40">
+                     <div className="w-full h-full border border-white/20 grid grid-cols-3 grid-rows-3">
+                         <div className="border-r border-b border-white/20"></div>
+                         <div className="border-r border-b border-white/20"></div>
+                         <div className="border-b border-white/20"></div>
+                         <div className="border-r border-b border-white/20"></div>
+                         <div className="border-r border-b border-white/20"></div>
+                         <div className="border-b border-white/20"></div>
+                         <div className="border-r border-white/20"></div>
+                         <div className="border-r border-white/20"></div>
+                         <div></div>
+                     </div>
+                  </div>
+                )}
 
-        {/* Focus Box (Center) */}
-        {!galleryOpen && (
-           <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-24 h-24 border border-white/50 corner-marks focus-box pointer-events-none">
-              <div className="absolute top-0 left-0 w-2 h-2 border-t-2 border-l-2 border-white"></div>
-              <div className="absolute top-0 right-0 w-2 h-2 border-t-2 border-r-2 border-white"></div>
-              <div className="absolute bottom-0 left-0 w-2 h-2 border-b-2 border-l-2 border-white"></div>
-              <div className="absolute bottom-0 right-0 w-2 h-2 border-b-2 border-r-2 border-white"></div>
-           </div>
-        )}
+                {/* Focus Box (Center) */}
+                {!galleryOpen && (
+                   <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-24 h-24 border border-white/50 corner-marks focus-box pointer-events-none">
+                      <div className="absolute top-0 left-0 w-2 h-2 border-t-2 border-l-2 border-white"></div>
+                      <div className="absolute top-0 right-0 w-2 h-2 border-t-2 border-r-2 border-white"></div>
+                      <div className="absolute bottom-0 left-0 w-2 h-2 border-b-2 border-l-2 border-white"></div>
+                      <div className="absolute bottom-0 right-0 w-2 h-2 border-b-2 border-r-2 border-white"></div>
+                   </div>
+                )}
 
-        {/* OSD Layer */}
-        {!galleryOpen && <OSD settings={settings} mode={mode} />}
+                {/* OSD Layer */}
+                {!galleryOpen && <OSD settings={settings} mode={mode} />}
+            </>
+        )}
       </div>
 
-      {/* Main Controls */}
-      {!galleryOpen && (
+      {/* Main Controls (Hide if error) */}
+      {!galleryOpen && !cameraError && (
         <Controls 
           mode={mode} 
           setMode={setMode} 
