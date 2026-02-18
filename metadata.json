@@ -1,0 +1,7 @@
+{
+  "name": "AlphaCam A1",
+  "description": "A professional-grade camera application simulating Sony A1 color science with AI-powered image stacking and enhancement.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
